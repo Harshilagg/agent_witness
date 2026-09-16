@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/report"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
@@ -118,10 +119,11 @@ func cmdRun(args []string) int {
 	sess.StartedAt = time.Now()
 	before := snapshot.Walk(projectDir)
 
-	exitCode, spawnErr := spawn(command)
+	exitCode, spawnErr, procResult := spawnAndSample(command)
 
 	sess.EndedAt = time.Now()
 	sess.ExitCode = exitCode
+	sess.Processes = procResult
 
 	if spawnErr != nil {
 		// The child never started (e.g. binary not found). We still want a
@@ -140,8 +142,15 @@ func cmdRun(args []string) int {
 		sess.Confidence.Notes = append(sess.Confidence.Notes,
 			fmt.Sprintf("filesystem walk truncated at %d files; some changes may be missed", snapshot.MaxFiles))
 	}
+	if !procResult.Available {
+		sess.Confidence.Notes = append(sess.Confidence.Notes,
+			"process tree sampling is unavailable on this platform (windows v0.1.0 collects filesystem only)")
+	} else {
+		sess.Confidence.Notes = append(sess.Confidence.Notes,
+			fmt.Sprintf("process tree sampled every %s: very short-lived processes between samples may be missed", procResult.Interval))
+	}
 	sess.Confidence.Notes = append(sess.Confidence.Notes,
-		"process, network and claim-log collection are not yet implemented (coming in later steps)")
+		"network and claim-log collection are not yet implemented (coming in later steps)")
 
 	if err := session.Save(projectDir, sess); err != nil {
 		fmt.Fprintf(os.Stderr, "agentwitness: failed to save session: %v\n", err)
@@ -153,8 +162,10 @@ func cmdRun(args []string) int {
 	return exitCode
 }
 
-// spawn runs command with stdio passed through directly to the real
-// terminal. This is the single most important correctness requirement: no
+// spawnAndSample runs command with stdio passed through directly to the real
+// terminal, sampling its descendant process tree while it runs.
+//
+// Stdio passthrough is the single most important correctness requirement: no
 // pty, no buffering, no interception of any stream, so an interactive
 // program behaves exactly as it would unwrapped.
 //
@@ -164,7 +175,7 @@ func cmdRun(args []string) int {
 // SIGINT/SIGTERM ourselves, not to forward them (the tty already did that)
 // but so we are not torn down before we've written the report — we only
 // ever observe, never kill.
-func spawn(command []string) (exitCode int, err error) {
+func spawnAndSample(command []string) (exitCode int, err error, procResult procs.Result) {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -182,24 +193,35 @@ func spawn(command []string) (exitCode int, err error) {
 	}()
 
 	if startErr := cmd.Start(); startErr != nil {
-		return 127, startErr
+		return 127, startErr, procs.Result{}
 	}
+
+	sampler := procs.NewSampler(cmd.Process.Pid, procs.DefaultInterval)
+	go sampler.Run()
+
 	waitErr := cmd.Wait()
+
+	// One last sample right at exit, before descendants that are about to be
+	// reaped disappear from the process table, then stop the ticking loop.
+	sampler.SampleNow()
+	sampler.Stop()
+	procResult = sampler.Result()
+
 	if waitErr == nil {
-		return 0, nil
+		return 0, nil, procResult
 	}
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 			if status.Signaled() {
-				return 128 + int(status.Signal()), nil
+				return 128 + int(status.Signal()), nil, procResult
 			}
-			return status.ExitStatus(), nil
+			return status.ExitStatus(), nil, procResult
 		}
-		return exitErr.ExitCode(), nil
+		return exitErr.ExitCode(), nil, procResult
 	}
 	// The process couldn't even be waited on (rare). Report it as a failure
 	// to start rather than guessing an exit code.
-	return 127, waitErr
+	return 127, waitErr, procResult
 }
 
 func cmdReport(args []string) int {

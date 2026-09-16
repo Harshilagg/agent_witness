@@ -49,6 +49,7 @@ func style(w io.Writer, code, s string) string {
 // Write renders s to w.
 func Write(w io.Writer, s *session.Session) {
 	writeSummary(w, s)
+	writeProcesses(w, s)
 	writeDiffStat(w, s)
 	writeFooter(w, s)
 }
@@ -61,6 +62,35 @@ func writeSummary(w io.Writer, s *session.Session) {
 	fmt.Fprintf(w, "  exit code:  %d\n", s.ExitCode)
 	fmt.Fprintf(w, "  files changed: %d added, %d modified, %d deleted\n",
 		len(s.Diff.Added), len(s.Diff.Modified), len(s.Diff.Deleted))
+	if s.Processes.Available {
+		fmt.Fprintf(w, "  processes:  %d descendant process(es) observed\n", len(s.Processes.Procs))
+	} else {
+		fmt.Fprintf(w, "  processes:  unavailable\n")
+	}
+	fmt.Fprintln(w)
+}
+
+func writeProcesses(w io.Writer, s *session.Session) {
+	if !s.Processes.Available || len(s.Processes.Procs) == 0 {
+		return
+	}
+	fmt.Fprintln(w, style(w, bold, "Processes"))
+	counts := map[string]int{}
+	for _, p := range s.Processes.Procs {
+		name := p.Comm
+		if name == "" {
+			name = "(unknown)"
+		}
+		counts[name]++
+	}
+	names := make([]string, 0, len(counts))
+	for n := range counts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Fprintf(w, "  %-20s x%d\n", n, counts[n])
+	}
 	fmt.Fprintln(w)
 }
 

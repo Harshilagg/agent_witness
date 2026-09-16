@@ -13,6 +13,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
 )
 
@@ -39,6 +40,8 @@ type Session struct {
 	SensitiveBefore snapshot.Result     `json:"sensitive_before,omitempty"`
 	SensitiveAfter  snapshot.Result     `json:"sensitive_after,omitempty"`
 	SensitiveDiff   snapshot.DiffResult `json:"sensitive_diff,omitempty"`
+
+	Processes procs.Result `json:"processes"`
 
 	// Confidence notes what did and didn't run, filled in by later steps and
 	// always rendered honestly in the report footer.
