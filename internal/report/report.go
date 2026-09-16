@@ -57,6 +57,7 @@ func Write(w io.Writer, s *session.Session) {
 	writeFindings(w, s)
 	writeSummary(w, s)
 	writeProcesses(w, s)
+	writeNetwork(w, s)
 	writeDiffStat(w, s)
 	writeFooter(w, s)
 }
@@ -146,6 +147,17 @@ func writeProcesses(w io.Writer, s *session.Session) {
 	sort.Strings(names)
 	for _, n := range names {
 		fmt.Fprintf(w, "  %-20s x%d\n", n, counts[n])
+	}
+	fmt.Fprintln(w)
+}
+
+func writeNetwork(w io.Writer, s *session.Session) {
+	if !s.Network.Available || len(s.Network.Connections) == 0 {
+		return
+	}
+	fmt.Fprintln(w, style(w, bold, "Network"))
+	for _, c := range s.Network.Connections {
+		fmt.Fprintf(w, "  %s:%d (pid %d)\n", c.RemoteHost, c.RemotePort, c.PID)
 	}
 	fmt.Fprintln(w)
 }

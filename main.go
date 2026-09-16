@@ -18,6 +18,7 @@ import (
 
 	"github.com/harshilaggarwal/agentwitness/internal/claim"
 	"github.com/harshilaggarwal/agentwitness/internal/correlate"
+	"github.com/harshilaggarwal/agentwitness/internal/netw"
 	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/report"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
@@ -62,13 +63,17 @@ func usage(w *os.File) {
 what its own session log claims.
 
 Usage:
-  agentwitness run -- <command...>    wrap and observe an agent invocation
-  agentwitness report [session-id]    re-render a past session (default: last)
-  agentwitness list                   list recorded sessions
-  agentwitness version                print the version
+  agentwitness run [--net] -- <command...>   wrap and observe an agent invocation
+  agentwitness report [session-id]           re-render a past session (default: last)
+  agentwitness list                          list recorded sessions
+  agentwitness version                       print the version
 
-agentwitness makes no network calls of its own and sends no telemetry. See
-the README for what it observes and what it can miss.
+  --net   also sample established TCP connections made by descendant
+          processes (best-effort; requires ss on Linux or lsof on macOS).
+          This inspects local kernel connection state only — agentwitness
+          itself still makes no network calls of its own and sends no
+          telemetry. See the README for what it observes and what it can
+          miss.
 `)
 }
 
@@ -88,14 +93,18 @@ func cmdRun(args []string) int {
 		}
 	}
 	if dashIdx == -1 || dashIdx == len(args)-1 {
-		fmt.Fprintln(os.Stderr, "agentwitness run: usage: agentwitness run -- <command...>")
+		fmt.Fprintln(os.Stderr, "agentwitness run: usage: agentwitness run [--net] -- <command...>")
 		return 2
 	}
-	// Flags before "--" are reserved for future use (e.g. --net in Step 5);
-	// none are defined yet, so any present is an error rather than silently
-	// ignored.
-	if dashIdx != 0 {
-		fmt.Fprintf(os.Stderr, "agentwitness run: unrecognized flags before --: %v\n", args[:dashIdx])
+	// Only --net is recognized before "--"; anything else is an error rather
+	// than silently ignored.
+	netEnabled := false
+	for _, a := range args[:dashIdx] {
+		if a == "--net" {
+			netEnabled = true
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "agentwitness run: unrecognized flag before --: %q\n", a)
 		return 2
 	}
 	command := args[dashIdx+1:]
@@ -126,7 +135,7 @@ func cmdRun(args []string) int {
 	before := snapshot.Walk(projectDir)
 	sensitiveBefore := snapshot.WalkSensitive(sensitivePaths, sensitiveKey)
 
-	exitCode, spawnErr, procResult := spawnAndSample(command)
+	exitCode, spawnErr, procResult, netResult := spawnAndSample(command, netEnabled)
 
 	sess.EndedAt = time.Now()
 	sess.ExitCode = exitCode
@@ -174,8 +183,30 @@ func cmdRun(args []string) int {
 			fmt.Sprintf("claim log: %d claim(s) from %d Claude Code session file(s)", len(claimResult.Claims), len(claimResult.Files)))
 		sess.Confidence.Notes = append(sess.Confidence.Notes, claimResult.Notes...)
 	}
-	sess.Confidence.Notes = append(sess.Confidence.Notes,
-		"network collection is not yet implemented (coming in a later step); until then, UNEXPECTED_EGRESS never fires")
+
+	if netEnabled {
+		if !netResult.Available {
+			sess.Confidence.Notes = append(sess.Confidence.Notes, netResult.Notes...)
+		} else {
+			sess.Confidence.Notes = append(sess.Confidence.Notes,
+				fmt.Sprintf("network: %d connection(s) observed via %s, sampled every %s: connections opened and closed between samples may be missed",
+					len(netResult.Connections), netResult.Tool, netw.DefaultInterval))
+		}
+	} else {
+		sess.Confidence.Notes = append(sess.Confidence.Notes,
+			"network sampling was not enabled (pass --net to enable); UNEXPECTED_EGRESS never fires without it")
+	}
+	sess.Network = netResult
+
+	var connections []correlate.Connection
+	for _, c := range netResult.Connections {
+		connections = append(connections, correlate.Connection{
+			RemoteHost: c.RemoteHost,
+			RemotePort: c.RemotePort,
+			PID:        c.PID,
+			Observed:   c.Observed,
+		})
+	}
 
 	sess.Findings = correlate.Analyze(
 		correlate.Observed{
@@ -183,9 +214,7 @@ func cmdRun(args []string) int {
 			Diff:          sess.Diff,
 			SensitiveDiff: sess.SensitiveDiff,
 			Processes:     procResult.Procs,
-			// Connections is left empty until network sampling (a later
-			// step) populates it; UNEXPECTED_EGRESS simply never fires
-			// until then, matching the confidence note above.
+			Connections:   connections,
 		},
 		correlate.Claimed{Claims: claimResult.Claims},
 		correlate.Config{AgentBinary: filepath.Base(command[0])},
@@ -214,7 +243,7 @@ func cmdRun(args []string) int {
 // SIGINT/SIGTERM ourselves, not to forward them (the tty already did that)
 // but so we are not torn down before we've written the report — we only
 // ever observe, never kill.
-func spawnAndSample(command []string) (exitCode int, err error, procResult procs.Result) {
+func spawnAndSample(command []string, netEnabled bool) (exitCode int, err error, procResult procs.Result, netResult netw.Result) {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -232,35 +261,60 @@ func spawnAndSample(command []string) (exitCode int, err error, procResult procs
 	}()
 
 	if startErr := cmd.Start(); startErr != nil {
-		return 127, startErr, procs.Result{}
+		return 127, startErr, procs.Result{}, netw.Result{}
 	}
+	rootPID := cmd.Process.Pid
 
-	sampler := procs.NewSampler(cmd.Process.Pid, procs.DefaultInterval)
-	go sampler.Run()
+	procSampler := procs.NewSampler(rootPID, procs.DefaultInterval)
+	go procSampler.Run()
+
+	// Network sampling must run concurrently with the child, not after
+	// cmd.Wait() returns: by the time Wait() returns the process (and its
+	// sockets) has already exited, so a post-exit sample would almost
+	// always see nothing. It reads the process sampler's growing descendant
+	// set on every tick, since new descendants can appear over the run.
+	var netSampler *netw.Sampler
+	if netEnabled {
+		netSampler = netw.NewSampler(netw.DefaultInterval, func() map[int]bool {
+			pids := map[int]bool{rootPID: true}
+			for _, p := range procSampler.Result().Procs {
+				pids[p.PID] = true
+			}
+			return pids
+		})
+		go netSampler.Run()
+	}
 
 	waitErr := cmd.Wait()
 
 	// One last sample right at exit, before descendants that are about to be
-	// reaped disappear from the process table, then stop the ticking loop.
-	sampler.SampleNow()
-	sampler.Stop()
-	procResult = sampler.Result()
+	// reaped disappear from the process/connection tables, then stop the
+	// ticking loops.
+	procSampler.SampleNow()
+	procSampler.Stop()
+	procResult = procSampler.Result()
+
+	if netSampler != nil {
+		netSampler.SampleNow()
+		netSampler.Stop()
+		netResult = netSampler.Result()
+	}
 
 	if waitErr == nil {
-		return 0, nil, procResult
+		return 0, nil, procResult, netResult
 	}
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 			if status.Signaled() {
-				return 128 + int(status.Signal()), nil, procResult
+				return 128 + int(status.Signal()), nil, procResult, netResult
 			}
-			return status.ExitStatus(), nil, procResult
+			return status.ExitStatus(), nil, procResult, netResult
 		}
-		return exitErr.ExitCode(), nil, procResult
+		return exitErr.ExitCode(), nil, procResult, netResult
 	}
 	// The process couldn't even be waited on (rare). Report it as a failure
 	// to start rather than guessing an exit code.
-	return 127, waitErr, procResult
+	return 127, waitErr, procResult, netResult
 }
 
 func cmdReport(args []string) int {

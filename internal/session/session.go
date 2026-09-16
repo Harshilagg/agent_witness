@@ -15,6 +15,7 @@ import (
 
 	"github.com/harshilaggarwal/agentwitness/internal/claim"
 	"github.com/harshilaggarwal/agentwitness/internal/correlate"
+	"github.com/harshilaggarwal/agentwitness/internal/netw"
 	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
 )
@@ -45,6 +46,7 @@ type Session struct {
 
 	Processes procs.Result `json:"processes"`
 	Claim     claim.Result `json:"claim"`
+	Network   netw.Result  `json:"network"`
 
 	Findings []correlate.Finding `json:"findings"`
 
