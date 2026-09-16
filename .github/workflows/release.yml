@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # As in ci.yml: only GitHub's own first-party actions. Everything that
+      # actually builds and ships the release is a direct go/shell command,
+      # or the `gh` CLI that ships preinstalled on GitHub-hosted runners —
+      # for a security tool, the supply chain of our own release process is
+      # part of what's being shipped.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Cross-compile release artifacts
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
+          for target in $targets; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            OUT="agentwitness"
+            if [ "$GOOS" = "windows" ]; then OUT="agentwitness.exe"; fi
+
+            echo "building ${GOOS}/${GOARCH}..."
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/${OUT}" .
+
+            ARCHIVE="agentwitness-${VERSION}-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              (cd dist && zip -q "${ARCHIVE}.zip" "$OUT" && rm "$OUT")
+            else
+              (cd dist && tar -czf "${ARCHIVE}.tar.gz" "$OUT" && rm "$OUT")
+            fi
+          done
+
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -la dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

@@ -12,10 +12,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/harshilaggarwal/agentwitness/internal/claim"
-	"github.com/harshilaggarwal/agentwitness/internal/correlate"
-	"github.com/harshilaggarwal/agentwitness/internal/session"
-	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
+	"github.com/Harshilagg/agent_witness/internal/claim"
+	"github.com/Harshilagg/agent_witness/internal/correlate"
+	"github.com/Harshilagg/agent_witness/internal/session"
+	"github.com/Harshilagg/agent_witness/internal/snapshot"
 )
 
 // useColor reports whether ANSI color codes should be written to w, honoring

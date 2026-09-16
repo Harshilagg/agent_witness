@@ -16,13 +16,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/harshilaggarwal/agentwitness/internal/claim"
-	"github.com/harshilaggarwal/agentwitness/internal/correlate"
-	"github.com/harshilaggarwal/agentwitness/internal/netw"
-	"github.com/harshilaggarwal/agentwitness/internal/procs"
-	"github.com/harshilaggarwal/agentwitness/internal/report"
-	"github.com/harshilaggarwal/agentwitness/internal/session"
-	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
+	"github.com/Harshilagg/agent_witness/internal/claim"
+	"github.com/Harshilagg/agent_witness/internal/correlate"
+	"github.com/Harshilagg/agent_witness/internal/netw"
+	"github.com/Harshilagg/agent_witness/internal/procs"
+	"github.com/Harshilagg/agent_witness/internal/report"
+	"github.com/Harshilagg/agent_witness/internal/session"
+	"github.com/Harshilagg/agent_witness/internal/snapshot"
 )
 
 // version is set via -ldflags "-X main.version=..." at release build time.

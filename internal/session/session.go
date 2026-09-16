@@ -13,11 +13,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/harshilaggarwal/agentwitness/internal/claim"
-	"github.com/harshilaggarwal/agentwitness/internal/correlate"
-	"github.com/harshilaggarwal/agentwitness/internal/netw"
-	"github.com/harshilaggarwal/agentwitness/internal/procs"
-	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
+	"github.com/Harshilagg/agent_witness/internal/claim"
+	"github.com/Harshilagg/agent_witness/internal/correlate"
+	"github.com/Harshilagg/agent_witness/internal/netw"
+	"github.com/Harshilagg/agent_witness/internal/procs"
+	"github.com/Harshilagg/agent_witness/internal/snapshot"
 )
 
 // Dir is the directory, relative to the project root, where session state

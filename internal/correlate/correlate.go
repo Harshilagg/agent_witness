@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/harshilaggarwal/agentwitness/internal/claim"
-	"github.com/harshilaggarwal/agentwitness/internal/procs"
-	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
+	"github.com/Harshilagg/agent_witness/internal/claim"
+	"github.com/Harshilagg/agent_witness/internal/procs"
+	"github.com/Harshilagg/agent_witness/internal/snapshot"
 )
 
 // FindingType identifies the kind of discrepancy a Finding reports.

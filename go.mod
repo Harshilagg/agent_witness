@@ -1,4 +1,4 @@
-module github.com/harshilaggarwal/agentwitness
+module github.com/Harshilagg/agent_witness
 
 go 1.22
 
