@@ -227,6 +227,12 @@ a 41st thing also happened that nothing chose to log.
 
 ## Roadmap
 
+- **Activity view (next)** — a side-by-side `claimed` vs `observed` table
+  rendered on every run, so a clean session is still a useful session
+  recap rather than just "none found", plus a merged chronological
+  timeline behind a `--timeline` flag. Every collector already timestamps
+  its data, so this is a rendering layer over what's already recorded and
+  will work retroactively on sessions you've already captured.
 - OpenCode, Cursor, and other agent claim-log parsers (the `claim.Source`
   interface already anticipates this)
 - Network egress allowlist configuration (`--allow-host` or a config file)
