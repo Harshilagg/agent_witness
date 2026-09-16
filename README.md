@@ -81,6 +81,19 @@ tested, left in because it's the honest result.
 go install github.com/Harshilagg/agent_witness@latest
 ```
 
+Note that `go install` names the binary after the module path, so this
+gives you `agent_witness`. The rest of this README calls it
+`agentwitness`; rename it if you want the shorter name:
+
+```
+mv "$(go env GOPATH)/bin/agent_witness" "$(go env GOPATH)/bin/agentwitness"
+```
+
+A `go install` build also reports its version as `dev` rather than
+`v0.1.0`, since the version is injected at release-build time via
+ldflags. Use a release binary if you need `agentwitness version` to be
+meaningful.
+
 Or download a prebuilt binary from the
 [Releases page](https://github.com/Harshilagg/agent_witness/releases) —
 linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64 — and
