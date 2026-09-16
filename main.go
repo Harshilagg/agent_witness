@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/harshilaggarwal/agentwitness/internal/claim"
+	"github.com/harshilaggarwal/agentwitness/internal/correlate"
 	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/report"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
@@ -117,8 +118,13 @@ func cmdRun(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "%s\n", style("agentwitness: observing "+shellJoin(command)))
 
+	homeDir, homeErr := os.UserHomeDir()
+	sensitivePaths := snapshot.DefaultSensitivePaths(homeDir)
+	sensitiveKey := session.NewSensitiveKey()
+
 	sess.StartedAt = time.Now()
 	before := snapshot.Walk(projectDir)
+	sensitiveBefore := snapshot.WalkSensitive(sensitivePaths, sensitiveKey)
 
 	exitCode, spawnErr, procResult := spawnAndSample(command)
 
@@ -135,13 +141,21 @@ func cmdRun(args []string) int {
 	}
 
 	after := snapshot.Walk(projectDir)
+	sensitiveAfter := snapshot.WalkSensitive(sensitivePaths, sensitiveKey)
 	sess.Before = before
 	sess.After = after
 	sess.Diff = snapshot.Diff(before, after)
+	sess.SensitiveBefore = sensitiveBefore
+	sess.SensitiveAfter = sensitiveAfter
+	sess.SensitiveDiff = snapshot.Diff(sensitiveBefore, sensitiveAfter)
 
 	if before.Truncated || after.Truncated {
 		sess.Confidence.Notes = append(sess.Confidence.Notes,
 			fmt.Sprintf("filesystem walk truncated at %d files; some changes may be missed", snapshot.MaxFiles))
+	}
+	if homeErr != nil {
+		sess.Confidence.Notes = append(sess.Confidence.Notes,
+			"sensitive path watchlist unavailable: could not determine home directory: "+homeErr.Error())
 	}
 	if !procResult.Available {
 		sess.Confidence.Notes = append(sess.Confidence.Notes,
@@ -154,18 +168,28 @@ func cmdRun(args []string) int {
 	claimResult := claim.ClaudeCode{}.Parse(projectDir, sess.StartedAt, sess.EndedAt)
 	sess.Claim = claimResult
 	if !claimResult.Available {
-		for _, n := range claimResult.Notes {
-			sess.Confidence.Notes = append(sess.Confidence.Notes, n)
-		}
+		sess.Confidence.Notes = append(sess.Confidence.Notes, claimResult.Notes...)
 	} else {
 		sess.Confidence.Notes = append(sess.Confidence.Notes,
 			fmt.Sprintf("claim log: %d claim(s) from %d Claude Code session file(s)", len(claimResult.Claims), len(claimResult.Files)))
-		for _, n := range claimResult.Notes {
-			sess.Confidence.Notes = append(sess.Confidence.Notes, n)
-		}
+		sess.Confidence.Notes = append(sess.Confidence.Notes, claimResult.Notes...)
 	}
 	sess.Confidence.Notes = append(sess.Confidence.Notes,
-		"network collection is not yet implemented (coming in a later step); correlation between observed and claimed is not yet implemented (coming in the next step)")
+		"network collection is not yet implemented (coming in a later step); until then, UNEXPECTED_EGRESS never fires")
+
+	sess.Findings = correlate.Analyze(
+		correlate.Observed{
+			ProjectDir:    projectDir,
+			Diff:          sess.Diff,
+			SensitiveDiff: sess.SensitiveDiff,
+			Processes:     procResult.Procs,
+			// Connections is left empty until network sampling (a later
+			// step) populates it; UNEXPECTED_EGRESS simply never fires
+			// until then, matching the confidence note above.
+		},
+		correlate.Claimed{Claims: claimResult.Claims},
+		correlate.Config{AgentBinary: filepath.Base(command[0])},
+	)
 
 	if err := session.Save(projectDir, sess); err != nil {
 		fmt.Fprintf(os.Stderr, "agentwitness: failed to save session: %v\n", err)

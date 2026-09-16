@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/harshilaggarwal/agentwitness/internal/claim"
+	"github.com/harshilaggarwal/agentwitness/internal/correlate"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
 )
@@ -35,9 +36,11 @@ func useColor(w io.Writer) bool {
 }
 
 const (
-	bold  = "\x1b[1m"
-	dim   = "\x1b[2m"
-	reset = "\x1b[0m"
+	bold   = "\x1b[1m"
+	dim    = "\x1b[2m"
+	red    = "\x1b[31m"
+	yellow = "\x1b[33m"
+	reset  = "\x1b[0m"
 )
 
 func style(w io.Writer, code, s string) string {
@@ -47,12 +50,44 @@ func style(w io.Writer, code, s string) string {
 	return code + s + reset
 }
 
-// Write renders s to w.
+// Write renders s to w. Discrepancies come first, then the plain summary,
+// then the diff stat, then an honest confidence footer — a reader should see
+// what went wrong before they see what happened normally.
 func Write(w io.Writer, s *session.Session) {
+	writeFindings(w, s)
 	writeSummary(w, s)
 	writeProcesses(w, s)
 	writeDiffStat(w, s)
 	writeFooter(w, s)
+}
+
+func writeFindings(w io.Writer, s *session.Session) {
+	if len(s.Findings) == 0 {
+		fmt.Fprintln(w, style(w, bold, "Discrepancies"))
+		fmt.Fprintln(w, "  none found")
+		fmt.Fprintln(w)
+		return
+	}
+	fmt.Fprintln(w, style(w, bold, fmt.Sprintf("Discrepancies (%d)", len(s.Findings))))
+	for _, f := range s.Findings {
+		fmt.Fprintf(w, "  %s %s\n", severityTag(w, f.Severity), f.Title)
+		fmt.Fprintf(w, "    %s\n", f.Detail)
+		for _, e := range f.Evidence {
+			fmt.Fprintf(w, "    - %s\n", e)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+func severityTag(w io.Writer, sev correlate.Severity) string {
+	switch sev {
+	case correlate.SeverityHigh:
+		return style(w, red+bold, "[HIGH]")
+	case correlate.SeverityMedium:
+		return style(w, yellow, "[MEDIUM]")
+	default:
+		return style(w, dim, "[LOW]")
+	}
 }
 
 func writeSummary(w io.Writer, s *session.Session) {

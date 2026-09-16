@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/harshilaggarwal/agentwitness/internal/claim"
+	"github.com/harshilaggarwal/agentwitness/internal/correlate"
 	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
 )
@@ -44,6 +45,8 @@ type Session struct {
 
 	Processes procs.Result `json:"processes"`
 	Claim     claim.Result `json:"claim"`
+
+	Findings []correlate.Finding `json:"findings"`
 
 	// Confidence notes what did and didn't run, filled in by later steps and
 	// always rendered honestly in the report footer.
