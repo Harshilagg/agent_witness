@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/harshilaggarwal/agentwitness/internal/claim"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
 	"github.com/harshilaggarwal/agentwitness/internal/snapshot"
 )
@@ -67,7 +68,27 @@ func writeSummary(w io.Writer, s *session.Session) {
 	} else {
 		fmt.Fprintf(w, "  processes:  unavailable\n")
 	}
+	if s.Claim.Available {
+		edits, reads, cmds := countClaimKinds(s.Claim.Claims)
+		fmt.Fprintf(w, "  claimed:    %d edit(s), %d read(s), %d command(s) (source: %s)\n", edits, reads, cmds, s.Claim.Source)
+	} else {
+		fmt.Fprintf(w, "  claimed:    unavailable\n")
+	}
 	fmt.Fprintln(w)
+}
+
+func countClaimKinds(claims []claim.Claim) (edits, reads, commands int) {
+	for _, c := range claims {
+		switch c.Kind {
+		case claim.KindEdit:
+			edits++
+		case claim.KindRead:
+			reads++
+		case claim.KindCommand:
+			commands++
+		}
+	}
+	return
 }
 
 func writeProcesses(w io.Writer, s *session.Session) {

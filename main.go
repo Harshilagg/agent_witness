@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harshilaggarwal/agentwitness/internal/claim"
 	"github.com/harshilaggarwal/agentwitness/internal/procs"
 	"github.com/harshilaggarwal/agentwitness/internal/report"
 	"github.com/harshilaggarwal/agentwitness/internal/session"
@@ -149,8 +150,22 @@ func cmdRun(args []string) int {
 		sess.Confidence.Notes = append(sess.Confidence.Notes,
 			fmt.Sprintf("process tree sampled every %s: very short-lived processes between samples may be missed", procResult.Interval))
 	}
+
+	claimResult := claim.ClaudeCode{}.Parse(projectDir, sess.StartedAt, sess.EndedAt)
+	sess.Claim = claimResult
+	if !claimResult.Available {
+		for _, n := range claimResult.Notes {
+			sess.Confidence.Notes = append(sess.Confidence.Notes, n)
+		}
+	} else {
+		sess.Confidence.Notes = append(sess.Confidence.Notes,
+			fmt.Sprintf("claim log: %d claim(s) from %d Claude Code session file(s)", len(claimResult.Claims), len(claimResult.Files)))
+		for _, n := range claimResult.Notes {
+			sess.Confidence.Notes = append(sess.Confidence.Notes, n)
+		}
+	}
 	sess.Confidence.Notes = append(sess.Confidence.Notes,
-		"network and claim-log collection are not yet implemented (coming in later steps)")
+		"network collection is not yet implemented (coming in a later step); correlation between observed and claimed is not yet implemented (coming in the next step)")
 
 	if err := session.Save(projectDir, sess); err != nil {
 		fmt.Fprintf(os.Stderr, "agentwitness: failed to save session: %v\n", err)
