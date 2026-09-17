@@ -69,7 +69,21 @@ func writeFindings(w io.Writer, s *session.Session) {
 		fmt.Fprintln(w)
 		return
 	}
-	fmt.Fprintln(w, style(w, bold, fmt.Sprintf("Discrepancies (%d)", len(s.Findings))))
+	// The headline count is of actual discrepancies. INFO findings are
+	// reported for auditability but are not themselves disagreements
+	// between observed and claimed, so counting them would overstate.
+	actionable := 0
+	for _, f := range s.Findings {
+		if f.Severity != correlate.SeverityInfo {
+			actionable++
+		}
+	}
+	if actionable == 0 {
+		fmt.Fprintln(w, style(w, bold, "Discrepancies"))
+		fmt.Fprintln(w, "  none found")
+	} else {
+		fmt.Fprintln(w, style(w, bold, fmt.Sprintf("Discrepancies (%d)", actionable)))
+	}
 	for _, f := range s.Findings {
 		fmt.Fprintf(w, "  %s %s\n", severityTag(w, f.Severity), f.Title)
 		fmt.Fprintf(w, "    %s\n", f.Detail)
@@ -86,6 +100,8 @@ func severityTag(w io.Writer, sev correlate.Severity) string {
 		return style(w, red+bold, "[HIGH]")
 	case correlate.SeverityMedium:
 		return style(w, yellow, "[MEDIUM]")
+	case correlate.SeverityInfo:
+		return style(w, dim, "[INFO]")
 	default:
 		return style(w, dim, "[LOW]")
 	}

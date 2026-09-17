@@ -1,6 +1,7 @@
 package correlate
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -374,5 +375,139 @@ func TestIsUnder(t *testing.T) {
 				t.Errorf("isUnder(%q, %q) = %v, want %v", tt.path, tt.root, got, tt.want)
 			}
 		})
+	}
+}
+
+// The following tests are built from a real Claude Code session that
+// produced 9 false positives against 1 true finding. Each reproduces one
+// category of that noise.
+
+func TestUnclaimedProcess_DefunctIsNotAFinding(t *testing.T) {
+	// macOS ps reports zombies as "<defunct>", which names a state, not a
+	// program. The real session produced eight of these as eight findings.
+	o := Observed{
+		Processes: []procs.Proc{
+			{PID: 1, Comm: "<defunct>"},
+			{PID: 2, Comm: "<defunct>"},
+			{PID: 3, Comm: "<defunct>"},
+		},
+	}
+	findings := Analyze(o, Claimed{}, Config{})
+	if got := findingsOfType(findings, UnclaimedProcess); len(got) != 0 {
+		t.Fatalf("got %+v, want no findings: <defunct> names a state, not a binary", got)
+	}
+}
+
+func TestUnclaimedProcess_MacOSPythonMatchesClaimedPython3(t *testing.T) {
+	// The real session claimed "python3 test_cart.py" twice, but macOS
+	// reports the framework executable as "Python", so a genuinely claimed
+	// invocation was flagged as unclaimed.
+	o := Observed{
+		Processes: []procs.Proc{{PID: 1, Comm: "Python"}},
+	}
+	c := Claimed{
+		Claims: []claim.Claim{
+			{Kind: claim.KindCommand, Tool: "Bash", Command: "python3 test_cart.py"},
+		},
+	}
+	findings := Analyze(o, c, Config{})
+	if got := findingsOfType(findings, UnclaimedProcess); len(got) != 0 {
+		t.Fatalf("got %+v, want none: Python should match a claimed python3", got)
+	}
+}
+
+func TestUnclaimedProcess_AgentInfrastructureIsGroupedNotHidden(t *testing.T) {
+	o := Observed{
+		Processes: []procs.Proc{
+			{PID: 1, Comm: "caffeinate"},
+			{PID: 2, Comm: "security"},
+			{PID: 3, Comm: "gh"},
+			{PID: 4, Comm: "curl"}, // genuinely unexpected, must stay MEDIUM
+		},
+	}
+	findings := Analyze(o, Claimed{}, Config{})
+	got := findingsOfType(findings, UnclaimedProcess)
+	if len(got) != 2 {
+		t.Fatalf("got %d findings, want 2 (one MEDIUM for curl, one INFO group): %+v", len(got), got)
+	}
+
+	var medium, info *Finding
+	for i := range got {
+		switch got[i].Severity {
+		case SeverityMedium:
+			medium = &got[i]
+		case SeverityInfo:
+			info = &got[i]
+		}
+	}
+	if medium == nil || medium.Title != "Unclaimed process: curl" {
+		t.Fatalf("expected a MEDIUM finding naming curl, got %+v", medium)
+	}
+	if info == nil {
+		t.Fatal("expected an INFO grouping for agent infrastructure")
+	}
+	// Grouped, but still auditable: every binary must remain visible.
+	joined := strings.Join(info.Evidence, " ")
+	for _, want := range []string{"caffeinate", "security", "gh"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("infrastructure evidence %q must still name %q — grouped, not hidden", joined, want)
+		}
+	}
+}
+
+func TestNormalizeBinary(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"Python", "python"},
+		{"python3", "python"},
+		{"python3.14", "python"},
+		{"NODE", "node"},
+		{"go", "go"},
+		{"", ""},
+		{"3.14", "3.14"}, // nothing left after stripping, so left alone
+	}
+	for _, tt := range tests {
+		if got := normalizeBinary(tt.in); got != tt.want {
+			t.Errorf("normalizeBinary(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestAnalyze_RealSessionNoiseReducedToSignal(t *testing.T) {
+	// End-to-end reproduction of the real session: 26 processes, of which
+	// only the file write was ever a genuine finding.
+	o := Observed{
+		ProjectDir: projectDir,
+		Diff: snapshot.DiffResult{
+			Modified: []snapshot.DiffEntry{diffEntry("cart.py")},
+		},
+		Processes: []procs.Proc{
+			{PID: 1, Comm: "<defunct>"}, {PID: 2, Comm: "<defunct>"},
+			{PID: 3, Comm: "gh"}, {PID: 4, Comm: "security"},
+			{PID: 5, Comm: "caffeinate"}, {PID: 6, Comm: "tail"},
+			{PID: 7, Comm: "tr"}, {PID: 8, Comm: "printf"},
+			{PID: 9, Comm: "uname"}, {PID: 10, Comm: "zsh"},
+			{PID: 11, Comm: "Python"},
+		},
+	}
+	c := Claimed{
+		Claims: []claim.Claim{
+			{Kind: claim.KindCommand, Tool: "Bash", Command: "python3 test_cart.py; echo \"exit=$?\""},
+		},
+	}
+
+	findings := Analyze(o, c, Config{})
+
+	var actionable []Finding
+	for _, f := range findings {
+		if f.Severity != SeverityInfo {
+			actionable = append(actionable, f)
+		}
+	}
+	if len(actionable) != 1 {
+		t.Fatalf("want exactly 1 actionable finding (the unclaimed cart.py write), got %d: %+v",
+			len(actionable), actionable)
+	}
+	if actionable[0].Type != UnclaimedWrite || actionable[0].Evidence[0] != "path: cart.py" {
+		t.Fatalf("the surviving finding should be the cart.py write, got %+v", actionable[0])
 	}
 }

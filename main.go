@@ -78,6 +78,44 @@ Usage:
 `)
 }
 
+// analyzeSession runs correlation over a session's recorded observations.
+//
+// It is deliberately called by both `run` and `report`, so a stored session
+// holds observations rather than conclusions: the filesystem diff, the
+// process tree and the claim log are facts that don't change, while how we
+// interpret them keeps improving. Recomputing on every render means a
+// session captured today benefits from correlation fixes made tomorrow,
+// instead of being permanently stuck with the findings of whatever version
+// happened to record it.
+func analyzeSession(s *session.Session) []correlate.Finding {
+	var connections []correlate.Connection
+	for _, c := range s.Network.Connections {
+		connections = append(connections, correlate.Connection{
+			RemoteHost: c.RemoteHost,
+			RemotePort: c.RemotePort,
+			PID:        c.PID,
+			Observed:   c.Observed,
+		})
+	}
+
+	agentBinary := ""
+	if len(s.Command) > 0 {
+		agentBinary = filepath.Base(s.Command[0])
+	}
+
+	return correlate.Analyze(
+		correlate.Observed{
+			ProjectDir:    s.Dir,
+			Diff:          s.Diff,
+			SensitiveDiff: s.SensitiveDiff,
+			Processes:     s.Processes.Procs,
+			Connections:   connections,
+		},
+		correlate.Claimed{Claims: s.Claim.Claims},
+		correlate.Config{AgentBinary: agentBinary},
+	)
+}
+
 // knownRunFlags are the flags cmdRun accepts before the "--" separator.
 var knownRunFlags = map[string]bool{"--net": true}
 
@@ -236,27 +274,7 @@ func cmdRun(args []string) int {
 	}
 	sess.Network = netResult
 
-	var connections []correlate.Connection
-	for _, c := range netResult.Connections {
-		connections = append(connections, correlate.Connection{
-			RemoteHost: c.RemoteHost,
-			RemotePort: c.RemotePort,
-			PID:        c.PID,
-			Observed:   c.Observed,
-		})
-	}
-
-	sess.Findings = correlate.Analyze(
-		correlate.Observed{
-			ProjectDir:    projectDir,
-			Diff:          sess.Diff,
-			SensitiveDiff: sess.SensitiveDiff,
-			Processes:     procResult.Procs,
-			Connections:   connections,
-		},
-		correlate.Claimed{Claims: claimResult.Claims},
-		correlate.Config{AgentBinary: filepath.Base(command[0])},
-	)
+	sess.Findings = analyzeSession(sess)
 
 	if err := session.Save(projectDir, sess); err != nil {
 		fmt.Fprintf(os.Stderr, "agentwitness: failed to save session: %v\n", err)
@@ -376,6 +394,10 @@ func cmdReport(args []string) int {
 		fmt.Fprintln(os.Stderr, "agentwitness: no recorded sessions found")
 		return 1
 	}
+	// Recompute rather than replaying the findings stored at capture time,
+	// so an older session is re-read with today's correlation logic. See
+	// analyzeSession.
+	sess.Findings = analyzeSession(sess)
 	report.Write(os.Stdout, sess)
 	return 0
 }

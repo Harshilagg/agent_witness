@@ -60,6 +60,10 @@ const (
 	SeverityHigh   Severity = "HIGH"
 	SeverityMedium Severity = "MEDIUM"
 	SeverityLow    Severity = "LOW"
+	// SeverityInfo is for findings a reader should be able to audit but
+	// should not be alarmed by — things that are expected in a normal
+	// session and are reported for completeness, not concern.
+	SeverityInfo Severity = "INFO"
 )
 
 // Finding is one discrepancy between what was observed and what was
@@ -132,6 +136,81 @@ var ShellWrappers = map[string]bool{
 	"zsh":  true,
 	"dash": true,
 	"env":  true,
+}
+
+// Unattributable are process records that name a state rather than a
+// program, so no binary can be attributed to them. macOS `ps` reports a
+// zombie's command as "<defunct>"; a real session produced eight of these,
+// each becoming its own finding, telling the reader nothing they could act
+// on. They are still counted in the observed process list — only excluded
+// from findings.
+var Unattributable = map[string]bool{
+	"<defunct>": true,
+	"(unknown)": true,
+}
+
+// AgentInfrastructure are binaries coding agents routinely spawn as their
+// own machinery rather than on the user's behalf. Observed in a real Claude
+// Code session: `caffeinate` (prevents sleep for the session), `security`
+// (macOS keychain), `gh` (GitHub integration), and `uname`/`tr`/`printf`/
+// `tail`/`head`/`sed`/`grep` (shell-environment snapshotting at startup).
+//
+// These are grouped into one informational finding, never silently
+// dropped. Several of them — `security` and `gh` especially — touch real
+// credentials, and quietly whitelisting a credential-reading binary in a
+// security tool would build precisely the blind spot an attacker would
+// choose to hide in. Grouping keeps them auditable while stopping them
+// from drowning genuine findings.
+//
+// Documented and exported so it is easy to extend as other agents' plumbing
+// shows up in practice.
+var AgentInfrastructure = map[string]bool{
+	"caffeinate": true,
+	"security":   true,
+	"gh":         true,
+	"uname":      true,
+	"tr":         true,
+	"printf":     true,
+	"tail":       true,
+	"head":       true,
+	"sed":        true,
+	"grep":       true,
+	"dirname":    true,
+	"basename":   true,
+	"which":      true,
+	"locale":     true,
+}
+
+// normalizeBinary reduces a binary name to a comparable form: lower-cased,
+// with any trailing version suffix removed.
+//
+// This exists because macOS reports the Python framework executable as
+// "Python" while the command that launched it says "python3" — a real
+// session flagged a genuinely claimed python3 invocation as unclaimed
+// purely on that mismatch. "Python", "python3" and "python3.14" all
+// normalize to "python".
+//
+// Deliberately biased toward over-matching: a collision here costs a missed
+// finding, while under-matching costs a false positive, and false positives
+// are what make this finding type untrustworthy.
+func normalizeBinary(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	// Strip a trailing version suffix: digits, optionally dot-separated.
+	end := len(n)
+	for end > 0 {
+		c := n[end-1]
+		if (c >= '0' && c <= '9') || c == '.' {
+			end--
+			continue
+		}
+		break
+	}
+	// Only strip if something recognizable is left, so "7" or "3.14" alone
+	// aren't reduced to nothing.
+	if end > 0 {
+		return n[:end]
+	}
+	return n
 }
 
 // Analyze compares Observed against Claimed and returns every discrepancy
@@ -289,6 +368,18 @@ func sensitiveTouches(o Observed) []Finding {
 // counts. This trades a few false negatives for far fewer false positives,
 // which is the right tradeoff here: this finding's severity stays MEDIUM
 // specifically because false positives are the main quality risk.
+//
+// Two further filters exist because a real Claude Code session produced 9
+// false positives against 1 true finding without them:
+//
+//   - Unattributable process records (macOS zombies reported as "<defunct>")
+//     are dropped: they say a process existed, but not which program it was,
+//     so there is nothing to attribute or for a reader to act on.
+//   - Agent infrastructure (see AgentInfrastructure) is demoted into a single
+//     informational finding rather than one MEDIUM per binary. It is grouped,
+//     never hidden: `security` reads the keychain and `gh` holds a GitHub
+//     token, so silently whitelisting them would build exactly the blind spot
+//     an attacker would want.
 func unclaimedProcesses(o Observed, c Claimed, cfg Config) []Finding {
 	claimedBinaries := map[string]bool{}
 	for _, cl := range c.Claims {
@@ -296,30 +387,35 @@ func unclaimedProcesses(o Observed, c Claimed, cfg Config) []Finding {
 			continue
 		}
 		for _, bin := range extractBinaries(cl.Command) {
-			claimedBinaries[bin] = true
+			claimedBinaries[normalizeBinary(bin)] = true
 		}
 	}
 
+	agentBinary := normalizeBinary(cfg.AgentBinary)
+
 	counts := map[string]int{}
+	infraCounts := map[string]int{}
 	for _, p := range o.Processes {
 		name := p.Comm
-		if name == "" || ShellWrappers[name] || claimedBinaries[name] {
+		if name == "" || Unattributable[name] {
 			continue
 		}
-		if cfg.AgentBinary != "" && name == cfg.AgentBinary {
+		norm := normalizeBinary(name)
+		if ShellWrappers[norm] || claimedBinaries[norm] {
+			continue
+		}
+		if agentBinary != "" && norm == agentBinary {
+			continue
+		}
+		if AgentInfrastructure[norm] {
+			infraCounts[name]++
 			continue
 		}
 		counts[name]++
 	}
 
-	names := make([]string, 0, len(counts))
-	for n := range counts {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
 	var out []Finding
-	for _, n := range names {
+	for _, n := range sortedKeys(counts) {
 		out = append(out, Finding{
 			Type:     UnclaimedProcess,
 			Severity: SeverityMedium,
@@ -331,6 +427,35 @@ func unclaimedProcesses(o Observed, c Claimed, cfg Config) []Finding {
 			Evidence: []string{"binary: " + n, fmt.Sprintf("count: %d", counts[n])},
 		})
 	}
+
+	if len(infraCounts) > 0 {
+		names := sortedKeys(infraCounts)
+		total := 0
+		evidence := make([]string, 0, len(names))
+		for _, n := range names {
+			total += infraCounts[n]
+			evidence = append(evidence, fmt.Sprintf("%s x%d", n, infraCounts[n]))
+		}
+		out = append(out, Finding{
+			Type:     UnclaimedProcess,
+			Severity: SeverityInfo,
+			Title:    fmt.Sprintf("Agent infrastructure: %d process(es)", total),
+			Detail: "These are processes coding agents routinely spawn for their own " +
+				"machinery (keychain access, sleep prevention, shell environment " +
+				"snapshots), not attributable to any claimed command. Grouped rather " +
+				"than hidden, since some of them hold real credentials.",
+			Evidence: evidence,
+		})
+	}
+	return out
+}
+
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -437,7 +562,7 @@ var shellSeparators = strings.NewReplacer("|", " ", "&&", " ", ";", " ")
 // sortFindings orders results deterministically: most severe first, then by
 // type, then by title. Presentation grouping is internal/report's concern.
 func sortFindings(f []Finding) {
-	rank := map[Severity]int{SeverityHigh: 0, SeverityMedium: 1, SeverityLow: 2}
+	rank := map[Severity]int{SeverityHigh: 0, SeverityMedium: 1, SeverityLow: 2, SeverityInfo: 3}
 	sort.SliceStable(f, func(i, j int) bool {
 		if rank[f[i].Severity] != rank[f[j].Severity] {
 			return rank[f[i].Severity] < rank[f[j].Severity]
