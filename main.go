@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,6 +78,36 @@ Usage:
 `)
 }
 
+// knownRunFlags are the flags cmdRun accepts before the "--" separator.
+var knownRunFlags = map[string]bool{"--net": true}
+
+// suggestSeparatorTypo detects the "--command" form, where the separator and
+// the wrapped command have been run together into one token ("--claude"
+// instead of "-- claude"). The two are nearly indistinguishable on screen,
+// which makes this worth catching explicitly rather than answering with a
+// usage line that doesn't point at the actual mistake.
+//
+// It returns the corrected argument string, or "" when the input doesn't look
+// like this particular typo.
+func suggestSeparatorTypo(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	// Only the first argument is considered: that's where the separator
+	// belongs, and guessing further in would risk "correcting" a flag that
+	// genuinely belongs to the wrapped command.
+	first := args[0]
+	if !strings.HasPrefix(first, "--") || knownRunFlags[first] {
+		return ""
+	}
+	name := strings.TrimPrefix(first, "--")
+	// A "=" means it's really a flag (--foo=bar), not a glued-on command.
+	if name == "" || strings.Contains(name, "=") {
+		return ""
+	}
+	return strings.Join(append([]string{"--", name}, args[1:]...), " ")
+}
+
 // cmdRun is Step 1: spawn the child with direct stdio passthrough (no pty,
 // no wrapping) so the interactive experience is identical to running the
 // command directly, snapshot the project directory before and after, and
@@ -93,6 +124,13 @@ func cmdRun(args []string) int {
 		}
 	}
 	if dashIdx == -1 || dashIdx == len(args)-1 {
+		// "--claude" instead of "-- claude" is an extremely easy typo to make
+		// and visually almost identical, so say what was probably meant
+		// rather than just restating the usage line.
+		if suggestion := suggestSeparatorTypo(args); suggestion != "" {
+			fmt.Fprintf(os.Stderr, "agentwitness run: %q looks like a missing space. Did you mean:\n\n    agentwitness run %s\n\n", args[0], suggestion)
+			return 2
+		}
 		fmt.Fprintln(os.Stderr, "agentwitness run: usage: agentwitness run [--net] -- <command...>")
 		return 2
 	}
